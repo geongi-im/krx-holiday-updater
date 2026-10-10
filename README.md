@@ -11,6 +11,7 @@ krx_holiday.py         KRX 휴장일 조회와 응답 검증 (실패 시 재시�
 calendar_db.py         krx_holiday 테이블 정의, 연도 단위 휴장일 교체 저장
 utils/logger_util.py   다른 프로젝트와 같은 공통 로그 유틸 (MQLogger)
 utils/telegram_util.py 다른 프로젝트와 같은 공통 텔레그램 유틸
+utils/holiday_util.py  다른 프로젝트가 복사해서 쓰는 휴장일 조회 유틸 (원본)
 tests/                 단위 테스트 (KRX 와 DB 는 가짜 객체로 대체)
 ```
 
@@ -57,24 +58,43 @@ SELECT cal_date, holiday_name FROM krx_holiday WHERE cal_date BETWEEN '2026-01-0
 SELECT MAX(updated_at) FROM krx_holiday;
 ```
 
-```python
-from datetime import date, timedelta
-
-def is_market_open(day: date, holidays: set[date]) -> bool:
-    return day.weekday() < 5 and day not in holidays
-
-def previous_open_day(day: date, holidays: set[date]) -> date:
-    day -= timedelta(days=1)
-    while not is_market_open(day, holidays):
-        day -= timedelta(days=1)
-    return day
-```
-
 해당 연도 행이 하나도 없으면 아직 받지 않은 연도입니다. 이때 모든 평일을 개장일로 보지 않도록,
-조회하는 쪽에서 연도 휴장일 수가 0 이면 실패로 처리하는 것을 권합니다.
+조회하는 쪽에서 연도 휴장일 수가 0 이면 실패로 처리해야 합니다. 아래 `holiday_util.py` 는 이를 자동으로 처리합니다.
 
 같은 MySQL 서버의 다른 DB(`stock` 등)를 쓰는 프로젝트는 `mqway.krx_holiday` 처럼 DB 이름을 붙여 조회합니다.
 해당 계정에 `mqway` 조회 권한이 있어야 합니다. `mqway` 계정은 `mqway` 와 `stock` 모두 권한이 있습니다.
+
+## 다른 프로젝트에서 쓰기 (holiday_util.py)
+
+`utils/holiday_util.py` 를 다른 프로젝트의 `utils/` 에 그대로 복사해서 씁니다. 이 저장소의 파일이 원본입니다.
+`pymysql`, `python-dotenv` 만 있으면 되고, `holidays` 패키지(`holidays.KR()`)를 대신합니다.
+`holidays.KR()` 는 연말 휴장일(12/31), 근로자의날, 임시공휴일 같은 거래소 휴장일을 모르므로 바꾸는 것을 권합니다.
+
+```python
+from utils.holiday_util import HolidayUtil
+
+holiday = HolidayUtil()
+
+if not holiday.is_today_trading_day():          # 오늘(KST) 거래일 여부
+    logger.info("휴장일이라 종료합니다.")
+    return
+
+base = holiday.get_previous_trading_day()        # 직전 거래일 (date)
+base_str = base.strftime("%Y%m%d")
+holiday.get_next_trading_day("20261230")         # 2027-01-04
+holiday.is_trading_day("2026-12-31")             # False
+holiday.get_holiday_name("20261231")             # '연말휴장일'
+holiday.get_holidays(2026)                       # {date: 사유, ...}
+```
+
+- 날짜는 `date`, `datetime`, `'YYYYMMDD'`, `'YYYY-MM-DD'` 를 받고 결과는 `date` 로 돌려줍니다.
+- 접속 정보는 `.env` 의 `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD` 를 읽고, 없으면 `MYSQL_*` 를 씁니다.
+  `mqway.krx_holiday` 로 DB 이름을 붙여 조회하므로 `DB_NAME` 이 `stock` 인 프로젝트에서도 됩니다.
+- 이미 연결이 있으면 `HolidayUtil(conn)` 으로 넘깁니다. 그 연결은 닫지 않으며 `DictCursor` 연결이어도 됩니다.
+- 연도별로 한 번만 조회하고 캐시합니다.
+- 해당 연도 데이터가 없으면 `HolidayDataError` 를 냅니다. DB 접속 실패도 예외로 나갑니다.
+  어느 경우든 거래일로 가정하지 말고 실패로 처리합니다.
+- `python utils/holiday_util.py` 로 실행하면 오늘 거래일 여부와 올해 휴장일 목록을 출력합니다.
 
 ## DB
 
