@@ -11,6 +11,7 @@ KRX 휴장일 목록을 받아 MariaDB krx_calendar 테이블에 연도 단위�
 from __future__ import annotations
 
 import argparse
+import html
 import logging
 import os
 import sys
@@ -24,6 +25,7 @@ from dotenv import load_dotenv
 import calendar_db
 from krx_holiday import KrxHolidayError, fetch_holidays
 from utils.logger_util import LoggerUtil
+from utils.telegram_util import TelegramUtil
 
 KST = timezone(timedelta(hours=9))
 APP_DIR = Path(__file__).resolve().parent
@@ -71,7 +73,9 @@ def default_years(now: datetime | None = None) -> list[int]:
 
 
 def send_telegram_alert(text: str) -> None:
-    """텔레그램으로 알림을 보낸다. 설정이 없거나 전송이 실패해도 예외를 내지 않는다.
+    """공통 TelegramUtil 로 알림을 보낸다. 설정이 없거나 전송이 실패해도 예외를 내지 않는다.
+
+    TelegramUtil 은 parse_mode=html 로 보내므로 오류 메시지에 섞인 < > & 때문에 전송이 거부되지 않도록 이스케이프한다.
 
     Args:
         text: 보낼 메시지입니다.
@@ -82,14 +86,9 @@ def send_telegram_alert(text: str) -> None:
         logger.warning("텔레그램 설정이 없어 알림을 건너뜁니다.")
         return
     try:
-        resp = requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            data={"chat_id": chat_id, "text": text},
-            timeout=10,
-        )
-        resp.raise_for_status()
-    except requests.RequestException as exc:
-        # requests 예외 메시지에는 요청 URL 이 들어가므로 봇 토큰을 가린다.
+        TelegramUtil().send_message(html.escape(text, quote=False))
+    except Exception as exc:
+        # 요청 URL 에 봇 토큰이 들어가므로 예외 메시지에 섞여 있으면 가린다.
         logger.error("텔레그램 알림 전송 실패: %s", str(exc).replace(token, "***"))
 
 

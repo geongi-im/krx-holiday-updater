@@ -5,7 +5,6 @@ from datetime import date, datetime, timedelta, timezone
 import logging
 
 import pytest
-import requests
 
 import calendar_db
 import main
@@ -161,10 +160,11 @@ def test_send_telegram_alert_masks_token_in_log(monkeypatch: pytest.MonkeyPatch,
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", token)
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "1")
 
-    def fake_post(url, **kwargs):
-        raise requests.ConnectionError(f"Max retries exceeded with url: /bot{token}/sendMessage")
+    class FailingTelegram:
+        def send_message(self, message):
+            raise OSError(f"failed: https://api.telegram.org/bot{token}/sendMessage")
 
-    monkeypatch.setattr(main.requests, "post", fake_post)
+    monkeypatch.setattr(main, "TelegramUtil", FailingTelegram)
 
     with caplog.at_level(logging.ERROR, logger="MQLogger"):
         main.send_telegram_alert("hi")
@@ -177,9 +177,25 @@ def test_send_telegram_alert_masks_token_in_log(monkeypatch: pytest.MonkeyPatch,
 def test_send_telegram_alert_skips_without_config(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
-    monkeypatch.setattr(main.requests, "post", lambda *a, **k: pytest.fail("전송하면 안 됩니다"))
+    monkeypatch.setattr(main, "TelegramUtil", lambda: pytest.fail("전송하면 안 됩니다"))
 
     main.send_telegram_alert("hi")
+
+
+def test_send_telegram_alert_escapes_html(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent: list[str] = []
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "1")
+
+    class FakeTelegram:
+        def send_message(self, message):
+            sent.append(message)
+
+    monkeypatch.setattr(main, "TelegramUtil", FakeTelegram)
+
+    main.send_telegram_alert("응답이 JSON 이 아닙니다: '<html>' & <urllib3 object>")
+
+    assert sent == ["응답이 JSON 이 아닙니다: '&lt;html&gt;' &amp; &lt;urllib3 object&gt;"]
 
 
 def test_cleanup_old_logs_removes_only_old_dated_files(tmp_path) -> None:

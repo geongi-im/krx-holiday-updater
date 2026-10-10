@@ -6,11 +6,12 @@ KRX 휴장일을 받아 mqway DB 의 `krx_calendar` 테이블에 저장하는 �
 ## 구성
 
 ```
-main.py              진입점. 연도별로 받아서 저장하고, 실패하면 텔레그램으로 알림
-krx_holiday.py       KRX 휴장일 조회와 응답 검증 (실패 시 재시도)
-calendar_db.py       krx_calendar 테이블 정의, 연도 전체 날짜 생성, upsert
-utils/logger_util.py 다른 프로젝트와 같은 공통 로그 유틸 (MQLogger)
-tests/               단위 테스트 (KRX 와 DB 는 가짜 객체로 대체)
+main.py                진입점. 연도별로 받아서 저장하고, 실패하면 텔레그램으로 알림
+krx_holiday.py         KRX 휴장일 조회와 응답 검증 (실패 시 재시도)
+calendar_db.py         krx_calendar 테이블 정의, 연도 전체 날짜 생성, upsert
+utils/logger_util.py   다른 프로젝트와 같은 공통 로그 유틸 (MQLogger)
+utils/telegram_util.py 다른 프로젝트와 같은 공통 텔레그램 유틸
+tests/                 단위 테스트 (KRX 와 DB 는 가짜 객체로 대체)
 ```
 
 ## 데이터 출처
