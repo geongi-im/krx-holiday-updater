@@ -127,6 +127,33 @@ cp .env.example .env                            # DB 접속 정보와 텔레그�
 | `DB_USER`, `DB_PASSWORD` | mqway `.env` 의 MySQL 계정 |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | 실패 알림용. 비워두면 알림을 건너뜁니다 |
 
+## 초기 세팅
+
+테이블은 첫 실행 때 자동으로 만들어지므로 따로 만들 필요가 없습니다. 다만 인자 없이 실행하면 올해와 내년만 채우므로,
+처음에는 과거 연도까지 지정해서 실행합니다.
+
+```bash
+python main.py --years 2020 2021 2022 2023 2024 2025 2026 2027 --dry-run   # DB 에 쓰지 않고 수신만 확인
+python main.py --years 2020 2021 2022 2023 2024 2025 2026 2027             # 실제 저장
+```
+
+- `.env` 의 `DB_NAME` 은 반드시 `mqway` 로 둡니다. 다른 프로젝트의 `holiday_util.py` 가 `mqway.krx_holiday` 를 조회합니다.
+- 다른 프로젝트가 1월 초에 직전 거래일을 구하면 전년도 데이터를 읽으므로, 최소한 전년도까지는 채워 둡니다.
+- 실행 계정에 `mqway` DB 의 CREATE 권한이 있어야 합니다.
+
+저장 결과는 다음으로 확인합니다.
+
+```sql
+SELECT YEAR(cal_date) AS year, COUNT(*) AS holidays FROM mqway.krx_holiday GROUP BY YEAR(cal_date);
+```
+
+```bash
+python utils/holiday_util.py      # 오늘 거래일 여부, 직전/다음 거래일, 올해 휴장일 목록 출력
+```
+
+참고로 2020~2027년은 연도별로 14, 13, 14, 15, 18, 19, 17, 16일이 저장됩니다. 이후에는 아래 자동 실행으로
+인자 없이 매일 돌리면 해가 바뀔 때 대상 연도도 따라서 바뀝니다.
+
 ## 실행
 
 ```bash
