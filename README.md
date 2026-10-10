@@ -1,7 +1,17 @@
 # krx-holiday-updater
 
-KRX 휴장일을 받아 MySQL/MariaDB `krx_calendar` 테이블에 저장하는 갱신 전용 프로젝트입니다.
+KRX 휴장일을 받아 mqway DB 의 `krx_calendar` 테이블에 저장하는 갱신 전용 프로젝트입니다.
 다른 프로젝트는 각자 휴장일을 계산하지 않고 이 테이블을 조회합니다.
+
+## 구성
+
+```
+main.py              진입점. 연도별로 받아서 저장하고, 실패하면 텔레그램으로 알림
+krx_holiday.py       KRX 휴장일 조회와 응답 검증 (실패 시 재시도)
+calendar_db.py       krx_calendar 테이블 정의, 연도 전체 날짜 생성, upsert
+utils/logger_util.py 다른 프로젝트와 같은 공통 로그 유틸 (MQLogger)
+tests/               단위 테스트 (KRX 와 DB 는 가짜 객체로 대체)
+```
 
 ## 데이터 출처
 
@@ -49,8 +59,22 @@ SELECT MIN(cal_date) FROM krx_calendar WHERE cal_date > '2026-10-08' AND is_open
 SELECT MAX(updated_at) FROM krx_calendar;
 ```
 
-같은 MariaDB 서버의 다른 DB 를 쓰는 프로젝트는 `mqway.krx_calendar` 처럼 DB 이름을 붙여 조회합니다.
-해당 계정에 `mqway` 조회 권한이 있어야 합니다.
+같은 MySQL 서버의 다른 DB(`stock` 등)를 쓰는 프로젝트는 `mqway.krx_calendar` 처럼 DB 이름을 붙여 조회합니다.
+해당 계정에 `mqway` 조회 권한이 있어야 합니다. `mqway` 계정은 `mqway` 와 `stock` 모두 권한이 있습니다.
+
+## DB
+
+mqway 프로젝트(`MQ/mqway`)의 Docker Compose 로 띄우는 MySQL 5.7 의 `mqway` DB 를 씁니다.
+
+- 서버: mqway 가 떠 있으면 그대로 씁니다. `DB_HOST=localhost`
+- 로컬(Windows): Docker Desktop 을 켜고 mqway 의 mysql 서비스만 올리면 됩니다.
+
+```bash
+cd MQ/mqway
+docker compose -f docker-compose.local.yml up -d mysql
+```
+
+접속 계정과 비밀번호는 mqway `.env` 의 `MYSQL_USER`, `MYSQL_PASSWORD` 와 같습니다.
 
 ## 설치
 
@@ -59,6 +83,15 @@ python -m venv .venv
 .venv/bin/pip install -r requirements.txt      # Windows: .venv\Scripts\pip install -r requirements.txt
 cp .env.example .env                            # DB 접속 정보와 텔레그램 설정 입력
 ```
+
+`.env` 항목:
+
+| 키 | 설명 |
+|---|---|
+| `DB_HOST`, `DB_PORT` | MySQL 주소 (기본 `localhost`, `3306`) |
+| `DB_NAME` | `mqway` |
+| `DB_USER`, `DB_PASSWORD` | mqway `.env` 의 MySQL 계정 |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | 실패 알림용. 비워두면 알림을 건너뜁니다 |
 
 ## 실행
 
@@ -71,12 +104,14 @@ python main.py --force               # 휴장일이 크게 줄어든 응답도 �
 
 - 연도별로 따로 처리하므로 한 연도가 실패해도 나머지 연도는 저장됩니다.
 - 하나라도 실패하면 텔레그램(`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`)으로 알리고 종료 코드 1 로 끝납니다.
-- 로그는 다른 프로젝트와 같은 `utils/logger_util.py` 로 남깁니다. 파일은 `logs/YYYY-MM-DD_log.log` 이고
-  90일이 지난 파일은 실행할 때 지웁니다.
+- 로그는 다른 프로젝트와 같은 `utils/logger_util.py` 로 남깁니다. 파일은 `logs/YYYY-MM-DD_log.log`(UTF-8) 이고
+  90일이 지난 파일은 실행할 때 지웁니다. 콘솔에도 같은 내용이 출력됩니다.
+- 텔레그램 전송이 실패해도 로그에는 봇 토큰을 `***` 로 가려서 남깁니다.
 
 ## 자동 실행
 
 다른 프로젝트보다 먼저 돌도록 매일 아침에 실행합니다. 주말에도 실행해서 갱신이 끊기지 않게 합니다.
+실행 시각에 mqway 의 MySQL 이 떠 있어야 합니다. 꺼져 있으면 DB 접속 실패로 알림이 갑니다.
 
 ```cron
 CRON_TZ=Asia/Seoul
