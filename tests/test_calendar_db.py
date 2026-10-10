@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 
 import calendar_db
-from calendar_db import CalendarRow, DbConfig, build_calendar_rows, upsert_rows
+from calendar_db import DbConfig, count_holidays, replace_year_holidays
 
 KST = timezone(timedelta(hours=9))
 
@@ -21,24 +21,22 @@ class FakeCursor:
         return None
 
     def execute(self, sql, params=None) -> None:
-        self.conn.executed.append(sql)
-        self.conn.params.append(params)
-
-    def fetchone(self):
-        return (self.conn.count,)
+        self.conn.executed.append((sql, params))
 
     def executemany(self, sql, params) -> None:
         if self.conn.fail:
             raise RuntimeError("db error")
         self.conn.many.append((sql, list(params)))
 
+    def fetchone(self):
+        return (self.conn.count,)
+
 
 class FakeConn:
     def __init__(self, fail: bool = False, count: int = 0) -> None:
         self.fail = fail
         self.count = count
-        self.executed: list[str] = []
-        self.params: list = []
+        self.executed: list[tuple[str, object]] = []
         self.many: list[tuple[str, list]] = []
         self.commits = 0
         self.rollbacks = 0
@@ -53,61 +51,59 @@ class FakeConn:
         self.rollbacks += 1
 
 
-def test_build_calendar_rows_covers_every_day() -> None:
-    rows = build_calendar_rows(2026, {})
-
-    assert len(rows) == 365
-    assert rows[0].cal_date == date(2026, 1, 1)
-    assert rows[-1].cal_date == date(2026, 12, 31)
-    assert build_calendar_rows(2028, {})[-1].cal_date == date(2028, 12, 31)
-    assert len(build_calendar_rows(2028, {})) == 366
-
-
-def test_build_calendar_rows_marks_weekend_holiday_and_open_day() -> None:
-    holidays = {date(2026, 12, 31): "연말휴장일"}
-    by_date = {row.cal_date: row for row in build_calendar_rows(2026, holidays)}
-
-    assert by_date[date(2026, 12, 31)] == CalendarRow(date(2026, 12, 31), False, "연말휴장일")
-    assert by_date[date(2026, 10, 10)] == CalendarRow(date(2026, 10, 10), False, "주말")  # 토요일
-    assert by_date[date(2026, 10, 12)] == CalendarRow(date(2026, 10, 12), True, None)
-
-
-def test_build_calendar_rows_prefers_krx_name_on_weekend() -> None:
-    by_date = {row.cal_date: row for row in build_calendar_rows(2026, {date(2026, 3, 1): "삼일절"})}
-
-    assert by_date[date(2026, 3, 1)].holiday_name == "삼일절"
-
-
-def test_upsert_rows_commits_with_naive_kst_timestamp() -> None:
+def test_replace_year_holidays_deletes_year_then_inserts_sorted() -> None:
     conn = FakeConn()
-    rows = [CalendarRow(date(2026, 1, 1), False, "신정"), CalendarRow(date(2026, 1, 2), True, None)]
+    holidays = {date(2026, 12, 31): "연말휴장일", date(2026, 1, 1): "신정"}
     updated_at = datetime(2026, 10, 10, 7, 0, tzinfo=KST)
 
-    assert upsert_rows(conn, rows, updated_at) == 2
-    sql, params = conn.many[0]
-    assert "ON DUPLICATE KEY UPDATE" in sql
-    assert params == [
-        (date(2026, 1, 1), 0, "신정", datetime(2026, 10, 10, 7, 0)),
-        (date(2026, 1, 2), 1, None, datetime(2026, 10, 10, 7, 0)),
+    assert replace_year_holidays(conn, 2026, holidays, updated_at) == 2
+
+    sql, params = conn.executed[0]
+    assert sql.startswith("DELETE FROM krx_holiday")
+    assert params == (date(2026, 1, 1), date(2026, 12, 31))
+    insert_sql, rows = conn.many[0]
+    assert insert_sql.startswith("INSERT INTO krx_holiday")
+    assert rows == [
+        (date(2026, 1, 1), "신정", datetime(2026, 10, 10, 7, 0)),
+        (date(2026, 12, 31), "연말휴장일", datetime(2026, 10, 10, 7, 0)),
     ]
     assert conn.commits == 1
 
 
-def test_upsert_rows_rolls_back_on_error() -> None:
+def test_replace_year_holidays_rolls_back_on_error() -> None:
     conn = FakeConn(fail=True)
 
     with pytest.raises(RuntimeError):
-        upsert_rows(conn, [CalendarRow(date(2026, 1, 1), False, "신정")], datetime.now(KST))
+        replace_year_holidays(conn, 2026, {date(2026, 1, 1): "신정"}, datetime.now(KST))
     assert conn.rollbacks == 1
     assert conn.commits == 0
 
 
-def test_ensure_table_creates_table() -> None:
+def test_replace_year_holidays_rejects_other_year() -> None:
+    conn = FakeConn()
+
+    with pytest.raises(ValueError, match="2027-01-01"):
+        replace_year_holidays(conn, 2026, {date(2027, 1, 1): "신정"}, datetime.now(KST))
+    assert conn.executed == []
+
+
+def test_count_holidays_queries_year() -> None:
+    conn = FakeConn(count=17)
+
+    assert count_holidays(conn, 2026) == 17
+    sql, params = conn.executed[0]
+    assert sql.startswith("SELECT COUNT(*) FROM krx_holiday")
+    assert params == (date(2026, 1, 1), date(2026, 12, 31))
+
+
+def test_ensure_table_creates_holiday_only_table() -> None:
     conn = FakeConn()
 
     calendar_db.ensure_table(conn)
 
-    assert "CREATE TABLE IF NOT EXISTS krx_calendar" in conn.executed[0]
+    sql = conn.executed[0][0]
+    assert "CREATE TABLE IF NOT EXISTS krx_holiday" in sql
+    assert "is_open" not in sql
     assert conn.commits == 1
 
 
@@ -125,11 +121,3 @@ def test_db_config_from_env_reports_missing(monkeypatch: pytest.MonkeyPatch) -> 
 
     with pytest.raises(ValueError, match="DB_USER, DB_PASSWORD, DB_NAME"):
         DbConfig.from_env()
-
-
-def test_count_krx_holidays_queries_year_without_weekend() -> None:
-    conn = FakeConn(count=17)
-
-    assert calendar_db.count_krx_holidays(conn, 2026) == 17
-    assert "is_open = 0" in conn.executed[0]
-    assert conn.params[0] == (date(2026, 1, 1), date(2026, 12, 31), "주말")

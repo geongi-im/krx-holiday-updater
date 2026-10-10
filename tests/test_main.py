@@ -32,18 +32,17 @@ def no_log_files(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
 def db(monkeypatch: pytest.MonkeyPatch) -> dict:
     state: dict = {"conn": FakeConn(), "saved": {}, "fail_years": set(), "existing": {}}
 
-    def fake_upsert(conn, rows, updated_at):
-        year = rows[0].cal_date.year
+    def fake_replace(conn, year, holidays, updated_at):
         if year in state["fail_years"]:
             raise RuntimeError("write error")
-        state["saved"][year] = rows
-        return len(rows)
+        state["saved"][year] = holidays
+        return len(holidays)
 
     monkeypatch.setattr(calendar_db.DbConfig, "from_env", classmethod(lambda cls: None))
     monkeypatch.setattr(calendar_db, "connect", lambda config: state["conn"])
     monkeypatch.setattr(calendar_db, "ensure_table", lambda conn: None)
-    monkeypatch.setattr(calendar_db, "upsert_rows", fake_upsert)
-    monkeypatch.setattr(calendar_db, "count_krx_holidays", lambda conn, year: state["existing"].get(year, 0))
+    monkeypatch.setattr(calendar_db, "replace_year_holidays", fake_replace)
+    monkeypatch.setattr(calendar_db, "count_holidays", lambda conn, year: state["existing"].get(year, 0))
     return state
 
 

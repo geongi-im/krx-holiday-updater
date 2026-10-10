@@ -1,6 +1,6 @@
 # krx-holiday-updater
 
-KRX 휴장일을 받아 mqway DB 의 `krx_calendar` 테이블에 저장하는 갱신 전용 프로젝트입니다.
+KRX 휴장일을 받아 mqway DB 의 `krx_holiday` 테이블에 저장하는 갱신 전용 프로젝트입니다.
 다른 프로젝트는 각자 휴장일을 계산하지 않고 이 테이블을 조회합니다.
 
 ## 구성
@@ -8,7 +8,7 @@ KRX 휴장일을 받아 mqway DB 의 `krx_calendar` 테이블에 저장하는 �
 ```
 main.py                진입점. 연도별로 받아서 저장하고, 실패하면 텔레그램으로 알림
 krx_holiday.py         KRX 휴장일 조회와 응답 검증 (실패 시 재시도)
-calendar_db.py         krx_calendar 테이블 정의, 연도 전체 날짜 생성, upsert
+calendar_db.py         krx_holiday 테이블 정의, 연도 단위 휴장일 교체 저장
 utils/logger_util.py   다른 프로젝트와 같은 공통 로그 유틸 (MQLogger)
 utils/telegram_util.py 다른 프로젝트와 같은 공통 텔레그램 유틸
 tests/                 단위 테스트 (KRX 와 DB 는 가짜 객체로 대체)
@@ -30,37 +30,50 @@ KRX 정보데이터시스템 휴장일 화면(`open.krx.co.kr`, 시장정보 > �
 ## 테이블
 
 ```sql
-CREATE TABLE IF NOT EXISTS krx_calendar (
-    cal_date     DATE        NOT NULL COMMENT '날짜',
-    is_open      TINYINT(1)  NOT NULL COMMENT '개장 여부 (1: 개장, 0: 휴장)',
-    holiday_name VARCHAR(50) NULL     COMMENT '휴장 사유 (개장일은 NULL, 주말은 주말)',
+CREATE TABLE IF NOT EXISTS krx_holiday (
+    cal_date     DATE        NOT NULL COMMENT '휴장일',
+    holiday_name VARCHAR(50) NOT NULL COMMENT '휴장 사유',
     updated_at   DATETIME    NOT NULL COMMENT '마지막 갱신 시각 (KST)',
-    PRIMARY KEY (cal_date),
-    KEY idx_is_open_date (is_open, cal_date)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='KRX 개장/휴장 달력';
+    PRIMARY KEY (cal_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='KRX 휴장일 (주말 제외)';
 ```
 
 테이블은 첫 실행 때 자동으로 만들어집니다.
-공휴일만이 아니라 연도의 **모든 날짜**를 저장합니다. 조회 결과가 없으면 "개장일"이 아니라 "데이터 없음"이라는 뜻이므로,
-조회하는 쪽에서는 행이 없을 때 개장일로 가정하지 말고 대체 수단을 쓰거나 실패로 처리해야 합니다.
+KRX 휴장일만 저장하고 주말은 넣지 않습니다. 실행할 때마다 연도별로 기존 휴장일을 지우고 새로 받은 목록으로
+다시 넣으므로(한 트랜잭션), KRX 가 휴장일을 취소하면 다음 실행 때 테이블에서도 사라집니다.
 
-## 조회 예시
+## 조회 방법
+
+**주말이 아니고 테이블에 없으면 개장일**입니다.
 
 ```sql
--- 특정 날짜 개장 여부 (행이 없으면 데이터 없음)
-SELECT is_open, holiday_name FROM krx_calendar WHERE cal_date = '2026-12-31';
+-- 특정 날짜가 휴장일인지 (행이 있으면 휴장, 주말은 따로 확인)
+SELECT holiday_name FROM krx_holiday WHERE cal_date = '2026-12-31';
 
--- 직전 개장일
-SELECT MAX(cal_date) FROM krx_calendar WHERE cal_date < '2026-10-12' AND is_open = 1;
-
--- 다음 개장일
-SELECT MIN(cal_date) FROM krx_calendar WHERE cal_date > '2026-10-08' AND is_open = 1;
+-- 연도의 휴장일 목록
+SELECT cal_date, holiday_name FROM krx_holiday WHERE cal_date BETWEEN '2026-01-01' AND '2026-12-31';
 
 -- 마지막 갱신 시각 (갱신이 멈췄는지 확인용)
-SELECT MAX(updated_at) FROM krx_calendar;
+SELECT MAX(updated_at) FROM krx_holiday;
 ```
 
-같은 MySQL 서버의 다른 DB(`stock` 등)를 쓰는 프로젝트는 `mqway.krx_calendar` 처럼 DB 이름을 붙여 조회합니다.
+```python
+from datetime import date, timedelta
+
+def is_market_open(day: date, holidays: set[date]) -> bool:
+    return day.weekday() < 5 and day not in holidays
+
+def previous_open_day(day: date, holidays: set[date]) -> date:
+    day -= timedelta(days=1)
+    while not is_market_open(day, holidays):
+        day -= timedelta(days=1)
+    return day
+```
+
+해당 연도 행이 하나도 없으면 아직 받지 않은 연도입니다. 이때 모든 평일을 개장일로 보지 않도록,
+조회하는 쪽에서 연도 휴장일 수가 0 이면 실패로 처리하는 것을 권합니다.
+
+같은 MySQL 서버의 다른 DB(`stock` 등)를 쓰는 프로젝트는 `mqway.krx_holiday` 처럼 DB 이름을 붙여 조회합니다.
 해당 계정에 `mqway` 조회 권한이 있어야 합니다. `mqway` 계정은 `mqway` 와 `stock` 모두 권한이 있습니다.
 
 ## DB

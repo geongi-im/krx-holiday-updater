@@ -2,7 +2,7 @@
 """
 KRX Holiday Updater
 
-KRX 휴장일 목록을 받아 MariaDB krx_calendar 테이블에 연도 단위로 저장한다.
+KRX 휴장일 목록을 받아 MySQL krx_holiday 테이블에 연도 단위로 교체 저장한다. 주말은 저장하지 않는다.
 - 기본 대상은 올해와 내년(KST 기준)이다.
 - 이미 저장된 연도는 KRX 휴장일이 크게 줄어든 응답이면 저장하지 않는다(--force 로 무시).
 - 실패하면 텔레그램으로 알리고 종료 코드 1 로 끝난다.
@@ -92,17 +92,12 @@ def send_telegram_alert(text: str) -> None:
         logger.error("텔레그램 알림 전송 실패: %s", str(exc).replace(token, "***"))
 
 
-def count_krx_closed(rows: Sequence[calendar_db.CalendarRow]) -> int:
-    """주말이 아닌 사유로 휴장인 날(KRX 휴장일) 수를 센다."""
-    return sum(1 for row in rows if not row.is_open and row.holiday_name != calendar_db.WEEKEND_NAME)
-
-
 def check_holiday_drop(year: int, existing: int, received: int) -> str | None:
     """이미 저장된 휴장일 수와 비교해 새로 받은 목록이 비정상적으로 줄었는지 확인한다.
 
     Args:
         year: 대상 연도입니다.
-        existing: DB 에 저장된 KRX 휴장일 수입니다.
+        existing: DB 에 저장된 휴장일 수입니다.
         received: 이번에 KRX 에서 받은 휴장일 수입니다.
 
     Returns:
@@ -128,7 +123,7 @@ def run(years: Sequence[int], *, dry_run: bool = False, force: bool = False) -> 
         실패 내용 목록입니다. 비어 있으면 모두 성공입니다.
     """
     failures: list[str] = []
-    rows_by_year: dict[int, list[calendar_db.CalendarRow]] = {}
+    holidays_by_year: dict[int, dict[date, str]] = {}
 
     with requests.Session() as session:
         for year in years:
@@ -138,20 +133,15 @@ def run(years: Sequence[int], *, dry_run: bool = False, force: bool = False) -> 
                 logger.error("%s", exc)
                 failures.append(str(exc))
                 continue
-            rows = calendar_db.build_calendar_rows(year, holidays)
-            rows_by_year[year] = rows
-            weekday_closed = count_krx_closed(rows)
-            logger.info(
-                "%d년 KRX 휴장일 %d일 수신 (평일 휴장 %d일, 개장일 %d일)",
-                year, len(holidays), weekday_closed, sum(1 for row in rows if row.is_open),
-            )
+            holidays_by_year[year] = holidays
+            logger.info("%d년 KRX 휴장일 %d일 수신", year, len(holidays))
             for day, name in sorted(holidays.items()):
                 logger.info("  %s %s", day.isoformat(), name)
 
     if dry_run:
         logger.info("dry-run 이므로 DB 저장을 건너뜁니다.")
         return failures
-    if not rows_by_year:
+    if not holidays_by_year:
         return failures
 
     try:
@@ -164,18 +154,17 @@ def run(years: Sequence[int], *, dry_run: bool = False, force: bool = False) -> 
     try:
         calendar_db.ensure_table(conn)
         updated_at = datetime.now(KST)
-        for year, rows in rows_by_year.items():
+        for year, holidays in holidays_by_year.items():
             try:
-                received = count_krx_closed(rows)
-                problem = check_holiday_drop(year, calendar_db.count_krx_holidays(conn, year), received)
+                problem = check_holiday_drop(year, calendar_db.count_holidays(conn, year), len(holidays))
                 if problem and not force:
                     logger.error("%s", problem)
                     failures.append(problem)
                     continue
                 if problem:
                     logger.warning("--force 이므로 저장합니다: %s", problem)
-                saved = calendar_db.upsert_rows(conn, rows, updated_at)
-                logger.info("%d년 %d행 저장 완료", year, saved)
+                saved = calendar_db.replace_year_holidays(conn, year, holidays, updated_at)
+                logger.info("%d년 휴장일 %d일 저장 완료", year, saved)
             except Exception as exc:
                 message = f"{year}년 DB 저장 실패: {exc}"
                 logger.error("%s", message)
@@ -192,7 +181,7 @@ def run(years: Sequence[int], *, dry_run: bool = False, force: bool = False) -> 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """명령행 인자를 읽는다."""
-    parser = argparse.ArgumentParser(description="KRX 휴장일을 받아 krx_calendar 테이블을 갱신합니다.")
+    parser = argparse.ArgumentParser(description="KRX 휴장일을 받아 krx_holiday 테이블을 갱신합니다.")
     parser.add_argument("--years", type=int, nargs="+", help="갱신할 연도 목록 (기본: 올해와 내년)")
     parser.add_argument("--dry-run", action="store_true", help="DB 에 저장하지 않고 받은 결과만 출력")
     parser.add_argument("--force", action="store_true", help="저장된 데이터보다 휴장일이 크게 줄어도 저장")
